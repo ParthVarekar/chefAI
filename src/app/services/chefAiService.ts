@@ -38,63 +38,47 @@ if (API_KEY) {
     ai = new GoogleGenAI({ apiKey: API_KEY });
 }
 
-// --- System Prompt for Gemini ---
+// --- Response Cache (5-minute TTL) ---
 
-const SYSTEM_PROMPT = `You are ChefAI, a small AI assistant embedded inside a restaurant dashboard sidebar.
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const responseCache = new Map<string, { response: ChefAiResponse; timestamp: number }>();
 
-Your job is ONLY to answer quick restaurant-related questions from users inside the chat sidebar.
-
-IMPORTANT BEHAVIOR RULES:
-1. You are a lightweight chat assistant.
-2. Keep responses SHORT.
-3. Never produce long explanations.
-4. Never output markdown.
-5. Never output code blocks.
-6. Only output a JSON object.
-7. Do not add commentary outside JSON.
-
-SUPPORTED INTENTS:
-menu, combo, best_combo, cheapest_combo, specials, reservation, kitchen_status, general
-
-OUTPUT FORMAT — Always respond with ONLY this JSON structure, nothing else:
-{
-  "intent": "menu | combo | best_combo | cheapest_combo | specials | reservation | kitchen_status | general",
-  "reply": "Short chat response",
-  "data": {}
+function getCachedResponse(key: string): ChefAiResponse | null {
+    const entry = responseCache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+        responseCache.delete(key);
+        return null;
+    }
+    return entry.response;
 }
 
-RESTAURANT DATA:
+function setCachedResponse(key: string, response: ChefAiResponse): void {
+    // Cap cache size to prevent memory leaks
+    if (responseCache.size > 100) {
+        const oldest = responseCache.keys().next().value;
+        if (oldest) responseCache.delete(oldest);
+    }
+    responseCache.set(key, { response, timestamp: Date.now() });
+}
 
-Menu Items:
-${menuItems.map((i) => `${i.name} — $${i.price} (${i.category})`).join('\n')}
+// --- Rate Limiter (8-second cooldown) ---
 
-Combo Meals:
-${comboMeals.map((c) => `${c.name}: ${c.items.join(' + ')} — $${c.price}${c.popular ? ' (popular)' : ''}`).join('\n')}
+const RATE_LIMIT_MS = 8000; // 8 seconds between API calls
+let lastApiCallTime = 0;
 
-Today's Specials:
-${todaySpecials.map((s) => `${s.name} — $${s.price} (${s.tag})`).join('\n')}
+function isRateLimited(): boolean {
+    return Date.now() - lastApiCallTime < RATE_LIMIT_MS;
+}
 
-Reservations Available:
-${reservationSlots.filter((r) => r.available).map((r) => `Table for ${r.tableSize} at ${r.time}`).join('\n')}
+// --- System Prompt for Gemini (compact to save tokens) ---
 
-Kitchen Status Options:
-${kitchenStatuses.join('\n')}
-
-INTENT RULES:
-- "menu" → return menu items in data.menu as array of {name, price}
-- "combo" → return all combos in data.combos as array of {name, items, price}
-- "best_combo" → return the most popular combo in data.combo as {name, items, price}
-- "cheapest_combo" → return the lowest priced combo in data.combo as {name, items, price}
-- "specials" → return specials in data.specials as array of {name, price, tag}
-- "reservation" → return next available slot in data as {time, table_size}
-- "kitchen_status" → return short operational update, data can be empty {}
-- "general" → greeting or unsupported question, data can be empty {}
-
-FINAL RULES:
-- Always return valid JSON only.
-- Never return plain text, markdown, or code fences.
-- Keep replies concise for sidebar display.
-- Always include "intent", "reply", and "data" fields.`;
+const SYSTEM_PROMPT = `You are ChefAI, a friendly restaurant assistant. Always answer helpfully. Never refuse.
+Our menu: Truffle Burger $14, Classic Burger $11, Margherita Pizza $12, Pepperoni Pizza $13, Chicken Wrap $9, Caesar Salad $8, Fries $4, Coke $3, Iced Tea $3.
+Combos: Burger Combo (Burger+Fries+Coke) $12 [popular], Pizza Combo (Pizza+Drink) $11, Wrap Combo (Wrap+Fries+Drink) $10.
+Today's specials: Truffle Burger $12 (discounted), Pepperoni Pizza $10 (limited), Burger Combo $10 (deal).
+Respond ONLY with JSON: {"intent":"general","reply":"short answer under 30 words","data":{}}
+No markdown. No code fences. Be positive and helpful.`;
 
 // --- Gemini API Call ---
 
@@ -102,12 +86,10 @@ async function callGemini(userMessage: string): Promise<ChefAiResponse | null> {
     if (!ai) return null;
 
     try {
+        lastApiCallTime = Date.now();
         const result = await ai.models.generateContent({
-            model: 'gemini-2.0-flash',
-            contents: userMessage,
-            config: {
-                systemInstruction: SYSTEM_PROMPT,
-            },
+            model: 'gemma-3-27b-it',
+            contents: `${SYSTEM_PROMPT}\n\nUser: ${userMessage}`,
         });
 
         const responseText = (result.text ?? '').trim();
@@ -138,13 +120,14 @@ async function callGemini(userMessage: string): Promise<ChefAiResponse | null> {
 // ================================================================
 
 const intentPatterns: { intent: Intent; keywords: string[] }[] = [
-    { intent: 'cheapest_combo', keywords: ['cheapest combo', 'lowest price combo', 'affordable combo', 'budget combo'] },
-    { intent: 'best_combo', keywords: ['best combo', 'popular combo', 'trending combo', 'top combo', 'recommended combo'] },
+    { intent: 'cheapest_combo', keywords: ['cheapest combo', 'lowest price combo', 'affordable combo', 'budget combo', 'cheap combo'] },
+    { intent: 'best_combo', keywords: ['best combo', 'popular combo', 'trending combo', 'top combo', 'recommended combo', 'favourite combo', 'favorite combo'] },
     { intent: 'combo', keywords: ['combo', 'bundle', 'meal deal', 'combo meal', 'combos'] },
-    { intent: 'specials', keywords: ['special', 'specials', "today's special", 'deal', 'offer', 'today special', 'promotion', 'promo'] },
-    { intent: 'menu', keywords: ['menu', 'food', 'items', 'dishes', 'what do you serve', 'what can i eat', "what's available", 'order', 'what food'] },
-    { intent: 'reservation', keywords: ['reservation', 'reserve', 'table', 'booking', 'book a table', 'seat', 'availability', 'seating'] },
-    { intent: 'kitchen_status', keywords: ['kitchen', 'status', 'how is the kitchen', 'kitchen running', 'prep time', 'busy'] },
+    { intent: 'specials', keywords: ['special', 'specials', "today's special", 'deal', 'offer', 'today special', 'promotion', 'promo', 'discount', 'sale'] },
+    { intent: 'menu', keywords: ['menu', 'food', 'items', 'dishes', 'what do you serve', 'what can i eat', "what's available", 'order', 'what food', 'topping', 'toppings', 'ingredient', 'ingredients', 'pizza', 'burger', 'wrap', 'salad', 'fries', 'drink', 'beverage', 'coke', 'tea'] },
+    { intent: 'reservation', keywords: ['reservation', 'reserve', 'table', 'booking', 'book a table', 'seat', 'availability', 'seating', 'book'] },
+    { intent: 'kitchen_status', keywords: ['kitchen', 'status', 'how is the kitchen', 'kitchen running', 'prep time', 'busy', 'wait time', 'how long'] },
+    { intent: 'best_combo', keywords: ['best', 'popular', 'trending', 'top', 'recommend', 'recommended', 'favourite', 'favorite', 'what should i', 'suggest', 'good'] },
 ];
 
 function detectIntent(message: string): Intent {
@@ -217,24 +200,65 @@ function localFallback(userMessage: string): ChefAiResponse {
             return { intent: 'kitchen_status', reply: status, data: {} };
         }
         case 'general':
-        default:
+        default: {
+            // Never say "no" — always give a helpful suggestion
+            const lower = userMessage.toLowerCase();
+            const best = comboMeals.find((c) => c.popular) || comboMeals[0];
+            const topSpecial = todaySpecials[0];
+
+            if (lower.includes('hi') || lower.includes('hello') || lower.includes('hey')) {
+                return {
+                    intent: 'general',
+                    reply: `Hey there! 👋 Our ${best.name} is trending today — want to check it out?`,
+                    data: { suggestion: { name: best.name, price: best.price } },
+                };
+            }
+
+            if (lower.includes('thank') || lower.includes('bye') || lower.includes('later')) {
+                return {
+                    intent: 'general',
+                    reply: 'You\'re welcome! Enjoy your meal! 🍽️',
+                    data: {},
+                };
+            }
+
+            // Default: always suggest something useful
             return {
                 intent: 'general',
-                reply: 'Hi! I can help with menu items, combo deals, reservations, or kitchen status.',
-                data: {},
+                reply: `Great question! I'd recommend our ${best.name} ($${best.price}) — it's a fan favorite. We also have ${topSpecial.name} on special for $${topSpecial.price} today!`,
+                data: {
+                    suggestion: { name: best.name, price: best.price },
+                    special: { name: topSpecial.name, price: topSpecial.price },
+                },
             };
+        }
     }
 }
 
-// --- Main Entry Point (now async) ---
+// --- Main Entry Point (API-first, local fallback when unavailable) ---
 
 export async function processMessage(userMessage: string): Promise<ChefAiResponse> {
-    // Try Gemini first
+    // Step 1: Check cache first
+    const cacheKey = userMessage.toLowerCase().trim();
+    const cached = getCachedResponse(cacheKey);
+    if (cached) {
+        console.log('[ChefAI] Cache hit — skipping API call');
+        return cached;
+    }
+
+    // Step 2: If rate limited, use local fallback
+    if (isRateLimited()) {
+        console.log('[ChefAI] Rate limited — using local fallback');
+        return localFallback(userMessage);
+    }
+
+    // Step 3: Try Gemini API first for ALL queries
     const geminiResponse = await callGemini(userMessage);
     if (geminiResponse) {
+        setCachedResponse(cacheKey, geminiResponse);
         return geminiResponse;
     }
 
-    // Fallback to local intent detection + mock data
+    // Step 4: Local fallback only when API is unavailable
     return localFallback(userMessage);
 }

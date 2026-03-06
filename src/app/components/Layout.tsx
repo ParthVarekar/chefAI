@@ -59,7 +59,7 @@ const ComboDataView: React.FC<{ combos: { name: string; items: string[]; price: 
           <span className="text-[11px] font-semibold text-white">{combo.name}</span>
           <span className="text-[11px] text-orange-400 font-bold">${combo.price}</span>
         </div>
-        <p className="text-[10px] text-slate-500">{combo.items.join(' + ')}</p>
+        <p className="text-[10px] text-slate-500">{Array.isArray(combo.items) ? combo.items.join(' + ') : ''}</p>
       </div>
     ))}
   </div>
@@ -71,7 +71,7 @@ const SingleComboView: React.FC<{ combo: { name: string; items: string[]; price:
       <span className="text-[11px] font-semibold text-white">{combo.name}</span>
       <span className="text-[11px] text-orange-400 font-bold">${combo.price}</span>
     </div>
-    <p className="text-[10px] text-slate-500">{combo.items.join(' + ')}</p>
+    <p className="text-[10px] text-slate-500">{Array.isArray(combo.items) ? combo.items.join(' + ') : ''}</p>
   </div>
 );
 
@@ -96,14 +96,14 @@ const ChatDataRenderer: React.FC<{ intent?: string; data?: Record<string, any> }
 
   switch (intent) {
     case 'menu':
-      return data.menu ? <MenuDataView menu={data.menu} /> : null;
+      return Array.isArray(data.menu) ? <MenuDataView menu={data.menu} /> : null;
     case 'combo':
-      return data.combos ? <ComboDataView combos={data.combos} /> : null;
+      return Array.isArray(data.combos) ? <ComboDataView combos={data.combos} /> : null;
     case 'cheapest_combo':
     case 'best_combo':
-      return data.combo ? <SingleComboView combo={data.combo} /> : null;
+      return data.combo && typeof data.combo === 'object' ? <SingleComboView combo={data.combo} /> : null;
     case 'specials':
-      return data.specials ? <SpecialsDataView specials={data.specials} /> : null;
+      return Array.isArray(data.specials) ? <SpecialsDataView specials={data.specials} /> : null;
     case 'reservation':
       return data.time ? (
         <div className="mt-2 bg-white/5 rounded-lg p-2 border border-white/10 text-[11px]">

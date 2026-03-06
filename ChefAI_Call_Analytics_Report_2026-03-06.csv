@@ -1,0 +1,27 @@
+Daily Call Volume (Hourly)
+Time,Calls
+08:00,12
+10:00,45
+12:00,89
+14:00,67
+16:00,34
+18:00,95
+20:00,110
+22:00,56
+
+Peak Hours: Morning vs Evening
+Day,Morning Shift,Evening Shift
+Mon,40,90
+Tue,30,85
+Wed,50,95
+Thu,45,100
+Fri,60,120
+Sat,80,140
+Sun,70,110
+
+Order Value Trends
+Period,Orders,Revenue ($)
+Week 1,150,4500
+Week 2,200,5600
+Week 3,180,5100
+Week 4,250,6800
